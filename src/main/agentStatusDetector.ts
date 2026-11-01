@@ -23,6 +23,9 @@ export interface StatusDetectionResult {
 
 const PERMISSION_PATTERNS: RegExp[] = [
   /do you want to proceed\??/i,
+  /Is this a project you created or one you trust\?/i,
+  /Yes,\s*I\s*trust\s*this\s*folder/i,
+  /Enter to confirm\s*·\s*Esc to cancel/i,
   /allow\s+(?:claude|codex|agy|tool|command|bash|edit|write|execution)/i,
   /approve\s+(?:this\s+)?(?:command|tool|action|change|patch|edit)/i,
   /permission\s+(?:required|requested|needed)/i,
@@ -111,21 +114,21 @@ export class AgentOutputMonitor {
       .slice(-6)
       .join(' | ')
 
-    // Immediate check for explicit permission prompts (always notify if agent asks permission)
-    if (!isWarmup) {
-      for (const pattern of PERMISSION_PATTERNS) {
-        if (pattern.test(tail)) {
-          this.clearIdleTimer()
-          this.setStatus(
-            'waiting_permission',
-            'Agent is asking for tool/command permission',
-            lastLines || 'Permission approval required',
-            true
-          )
-          return
-        }
+    // Immediate check for explicit permission prompts (even during startup warmup if Claude asks workspace trust)
+    for (const pattern of PERMISSION_PATTERNS) {
+      if (pattern.test(tail)) {
+        this.clearIdleTimer()
+        this.setStatus(
+          'waiting_permission',
+          'Agent is asking for permission / trust confirmation',
+          lastLines || 'Permission approval required',
+          true
+        )
+        return
       }
+    }
 
+    if (!isWarmup) {
       // Immediate check for explicit completion markers
       for (const pattern of COMPLETED_PATTERNS) {
         if (pattern.test(tail)) {
