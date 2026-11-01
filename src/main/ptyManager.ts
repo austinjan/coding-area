@@ -145,12 +145,17 @@ export class PtyManager {
         const utf8Init =
           '[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); chcp 65001 > $null'
         if (launchCmd) {
-          ptyProcess.write(`${utf8Init}; clear; ${launchCmd}\r`)
+          const baseBin = AGENT_PROFILES[req.agentType]?.command || launchCmd.split(' ')[0]
+          const safeCheck = `if (Get-Command "${baseBin}" -ErrorAction SilentlyContinue) { ${launchCmd} } else { Write-Host "[Coding Area] '${baseBin}' CLI is not installed on this machine. Shell is ready — or use 'claude' / install '${baseBin}'." -ForegroundColor Yellow }`
+          ptyProcess.write(`${utf8Init}; clear; ${safeCheck}\r`)
         } else {
           ptyProcess.write(`${utf8Init}; clear\r`)
         }
       } else if (launchCmd) {
-        ptyProcess.write(`${launchCmd}\r`)
+        const baseBin = AGENT_PROFILES[req.agentType]?.command || launchCmd.split(' ')[0]
+        ptyProcess.write(
+          `if command -v ${baseBin} >/dev/null 2>&1; then ${launchCmd}; else printf "\\033[33m[Coding Area] '${baseBin}' CLI is not installed on this machine. Shell is ready.\\033[0m\\n"; fi\r`
+        )
       }
     }, 180)
 
