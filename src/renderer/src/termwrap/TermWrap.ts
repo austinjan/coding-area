@@ -93,15 +93,21 @@ export class TermWrap {
 
     this.terminal.open(this.container)
 
-    // Load WebGL renderer for GPU-accelerated rendering (like WaveTerm), fallback cleanly if context lost
-    try {
-      const webglAddon = new WebglAddon()
-      webglAddon.onContextLoss(() => {
-        webglAddon.dispose()
-      })
-      this.terminal.loadAddon(webglAddon)
-    } catch {
-      // Fallback to standard canvas/DOM renderer automatically
+    // Only attempt WebGL rendering if the container is visibly laid out in the DOM
+    if (this.container.clientWidth > 0 && this.container.clientHeight > 0) {
+      try {
+        const webglAddon = new WebglAddon()
+        webglAddon.onContextLoss(() => {
+          try {
+            webglAddon.dispose()
+          } catch {
+            // ignore
+          }
+        })
+        this.terminal.loadAddon(webglAddon)
+      } catch {
+        // Fallback to standard canvas/DOM renderer automatically
+      }
     }
 
     this.registerProtocolHandlers()
@@ -257,8 +263,13 @@ export class TermWrap {
   }
 
   public dispose(): void {
+    if (this.disposed) return
     this.disposed = true
     this.resizeObserver?.disconnect()
-    this.terminal.dispose()
+    try {
+      this.terminal.dispose()
+    } catch {
+      // ignore internal xterm addon disposal race when container was not yet visible
+    }
   }
 }

@@ -107,12 +107,12 @@ export function App(): React.JSX.Element {
             : restoredSessions.slice(0, 2).map((s) => s.id)
         )
       } else {
-        // First time launch: create starter terminals for Codex, Claude, and AGY
+        // First time launch: create two parallel Claude Code sessions by default
         const starterCwd = cwd || 'C:\\'
         const initialSessions: TerminalSessionMetadata[] = [
           {
             id: generateId(),
-            title: 'Claude Code — Main',
+            title: 'Claude Code #1',
             agentType: 'claude',
             cwd: starterCwd,
             autoStartAgent: true,
@@ -121,20 +121,11 @@ export function App(): React.JSX.Element {
           },
           {
             id: generateId(),
-            title: 'Codex CLI — Worker',
-            agentType: 'codex',
+            title: 'Claude Code #2',
+            agentType: 'claude',
             cwd: starterCwd,
             autoStartAgent: true,
             createdAt: Date.now() + 1,
-            lastStatus: 'starting'
-          },
-          {
-            id: generateId(),
-            title: 'AGY CLI — Agent',
-            agentType: 'agy',
-            cwd: starterCwd,
-            autoStartAgent: true,
-            createdAt: Date.now() + 2,
             lastStatus: 'starting'
           }
         ]

@@ -23,6 +23,9 @@ export interface StatusDetectionResult {
 
 const PERMISSION_PATTERNS: RegExp[] = [
   /do you want to proceed\??/i,
+  /Is this a project you created or one you trust\?/i,
+  /Yes,\s*I\s*trust\s*this\s*folder/i,
+  /Enter to confirm\s*·\s*Esc to cancel/i,
   /allow\s+(?:claude|codex|agy|tool|command|bash|edit|write|execution)/i,
   /approve\s+(?:this\s+)?(?:command|tool|action|change|patch|edit)/i,
   /permission\s+(?:required|requested|needed)/i,
@@ -62,6 +65,9 @@ export class AgentOutputMonitor {
   private status: AgentStatus = 'starting'
   private idleTimer: NodeJS.Timeout | null = null
   private hadSignificantOutput = false
+  private hasUserInteracted = false
+  private createdAt = Date.now()
+  private lastNotificationAt = 0
   private lastNotificationSignature = ''
 
   constructor(
@@ -78,21 +84,24 @@ export class AgentOutputMonitor {
   }
 
   public onUserInput(data: string): void {
-    // When user presses Enter or submits input, agent transitions to running
+    // Only count real user keystrokes after the initial 1.5s startup window
+    if (Date.now() - this.createdAt > 1500) {
+      this.hasUserInteracted = true
+    }
     if (data.includes('\r') || data.includes('\n')) {
       this.hadSignificantOutput = false
       this.setStatus('running', 'User submitted input', '', false)
     } else if (this.status === 'waiting_permission') {
-      // Single keystroke (e.g. 'y', 'n', '1', Enter) in TUI permission selector
       this.setStatus('running', 'User responded to prompt', '', false)
     }
   }
 
   public onData(rawChunk: string): void {
+    const isWarmup = Date.now() - this.createdAt < 4000
     const hasBell = rawChunk.includes('\x07')
     const cleaned = stripAnsi(rawChunk)
 
-    if (cleaned.trim().length > 4) {
+    if (!isWarmup && cleaned.trim().length > 8) {
       this.hadSignificantOutput = true
     }
 
@@ -105,13 +114,13 @@ export class AgentOutputMonitor {
       .slice(-6)
       .join(' | ')
 
-    // Immediate check for explicit permission prompts
+    // Immediate check for explicit permission prompts (even during startup warmup if Claude asks workspace trust)
     for (const pattern of PERMISSION_PATTERNS) {
       if (pattern.test(tail)) {
         this.clearIdleTimer()
         this.setStatus(
           'waiting_permission',
-          'Agent is asking for tool/command permission',
+          'Agent is asking for permission / trust confirmation',
           lastLines || 'Permission approval required',
           true
         )
@@ -119,33 +128,34 @@ export class AgentOutputMonitor {
       }
     }
 
-    // Immediate check for explicit completion markers
-    for (const pattern of COMPLETED_PATTERNS) {
-      if (pattern.test(tail)) {
+    if (!isWarmup) {
+      // Immediate check for explicit completion markers
+      for (const pattern of COMPLETED_PATTERNS) {
+        if (pattern.test(tail)) {
+          this.clearIdleTimer()
+          this.setStatus(
+            'completed',
+            'Agent reported task completion',
+            lastLines || 'Task finished',
+            this.hasUserInteracted
+          )
+          return
+        }
+      }
+
+      // If terminal rings the bell (\x07) after user interaction
+      if (hasBell && this.hasUserInteracted && this.status === 'running') {
         this.clearIdleTimer()
         this.setStatus(
-          'completed',
-          'Agent reported task completion',
-          lastLines || 'Task finished',
+          'waiting_input',
+          'Terminal bell triggered by agent',
+          lastLines || 'Agent requested attention',
           true
         )
         return
       }
     }
 
-    // If terminal rings the bell (\x07), Coding Agents often use it to signal attention needed
-    if (hasBell && this.status === 'running') {
-      this.clearIdleTimer()
-      this.setStatus(
-        'waiting_input',
-        'Terminal bell triggered by agent',
-        lastLines || 'Agent requested attention',
-        true
-      )
-      return
-    }
-
-    // Otherwise while streaming output, mark as running and reset idle detector
     if (this.status === 'starting' && cleaned.trim().length > 0) {
       this.setStatus('running', 'Agent initialized', lastLines, false)
     }
@@ -172,7 +182,6 @@ export class AgentOutputMonitor {
 
   private scheduleIdleCheck(): void {
     this.clearIdleTimer()
-    // After 2.5 seconds of silence following output, inspect the tail for input prompts or completion
     this.idleTimer = setTimeout(() => {
       const tail = this.recentBuffer.slice(-800)
       const lastLines = tail
@@ -196,33 +205,49 @@ export class AgentOutputMonitor {
 
       for (const pattern of COMPLETED_PATTERNS) {
         if (pattern.test(tail)) {
-          this.setStatus('completed', 'Agent finished task', lastLines, true)
+          this.setStatus(
+            'completed',
+            'Agent finished task',
+            lastLines,
+            this.hasUserInteracted
+          )
           return
         }
       }
 
       for (const pattern of WAITING_INPUT_PATTERNS) {
         if (pattern.test(tail)) {
-          const nextStatus: AgentStatus = this.hadSignificantOutput ? 'completed' : 'waiting_input'
-          const reason = this.hadSignificantOutput
-            ? 'Agent finished turn and is waiting for next prompt'
-            : 'Agent is ready for user input'
+          const nextStatus: AgentStatus =
+            this.hadSignificantOutput && this.hasUserInteracted
+              ? 'completed'
+              : 'waiting_input'
+          const reason =
+            nextStatus === 'completed'
+              ? 'Agent finished turn and is waiting for next prompt'
+              : 'Agent is ready for user input'
+          const shouldNotify = this.hasUserInteracted && this.hadSignificantOutput
           this.hadSignificantOutput = false
-          this.setStatus(nextStatus, reason, lastLines || 'Waiting for prompt', true)
+          this.setStatus(
+            nextStatus,
+            reason,
+            lastLines || 'Waiting for prompt',
+            shouldNotify
+          )
           return
         }
       }
 
       if (this.hadSignificantOutput && this.agentType !== 'shell') {
+        const shouldNotify = this.hasUserInteracted
         this.hadSignificantOutput = false
         this.setStatus(
           'waiting_input',
           'Agent output settled — ready for input',
           lastLines || 'Ready for input',
-          true
+          shouldNotify
         )
       }
-    }, 2500)
+    }, 3000)
   }
 
   private setStatus(
@@ -231,12 +256,16 @@ export class AgentOutputMonitor {
     snippet: string,
     notifyCandidate: boolean
   ): void {
+    const now = Date.now()
     const signature = `${nextStatus}:${snippet.slice(-120)}`
     const statusChanged = this.status !== nextStatus
     this.status = nextStatus
 
+    // Rate-limit desktop notifications per session to at most 1 every 8 seconds
+    const cooldownPassed = now - this.lastNotificationAt > 8000
     const shouldNotify =
       notifyCandidate &&
+      cooldownPassed &&
       (statusChanged || this.lastNotificationSignature !== signature) &&
       (nextStatus === 'waiting_permission' ||
         nextStatus === 'waiting_input' ||
@@ -244,6 +273,7 @@ export class AgentOutputMonitor {
 
     if (shouldNotify) {
       this.lastNotificationSignature = signature
+      this.lastNotificationAt = now
     }
 
     if (statusChanged || shouldNotify) {
